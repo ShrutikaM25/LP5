@@ -1,113 +1,149 @@
+// !nvcc -arch=sm_75 <assignmentName>.cu -o output
+// !./output
+
 #include <iostream>
-#include <cstdlib>
-#include <ctime>
-#include <cuda.h>
-
-#define VECTOR_SIZE 1024 
-
+#include <cuda_runtime.h>
+#include <chrono>
 using namespace std;
 
-
-__global__ void vectorAdd(float* A, float* B, float* C, int size) {
+// CUDA Kernel for Vector Addition
+__global__ void vectorAdd(int *a, int *b, int *c, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < size)
-        C[i] = A[i] + B[i];
+    if (i < n)
+        c[i] = a[i] + b[i];
 }
 
-
-__global__ void matrixMul(float* A, float* B, float* C, int N) {
+// CUDA Kernel for Matrix Multiplication
+__global__ void matrixMul(int *a, int *b, int *c, int N) {
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
-
     if (row < N && col < N) {
-        float sum = 0.0f;
-        for (int k = 0; k < N; ++k)
-            sum += A[row * N + k] * B[k * N + col];
-        C[row * N + col] = sum;
+        int sum = 0;
+        for (int k = 0; k < N; k++)
+            sum += a[row * N + k] * b[k * N + col];
+        c[row * N + col] = sum;
     }
 }
 
-
-void fillRandom(float* arr, int size) {
-    for (int i = 0; i < size; ++i)
-        arr[i] = static_cast<float>(rand() % 100);
+// CPU Vector Add
+void vectorAddCPU(int *a, int *b, int *c, int n) {
+    for (int i = 0; i < n; i++)
+        c[i] = a[i] + b[i];
 }
 
+// CPU Matrix Mul
+void matrixMulCPU(int *a, int *b, int *c, int N) {
+    for (int i = 0; i < N; i++)
+        for (int j = 0; j < N; j++) {
+            int sum = 0;
+            for (int k = 0; k < N; k++)
+                sum += a[i * N + k] * b[k * N + j];
+            c[i * N + j] = sum;
+        }
+}
 
-void printPartial(const float* arr, int size, int cols = -1) {
-    int limit = min(size, 10);
-    for (int i = 0; i < limit; ++i) {
-        if (cols > 0 && i % cols == 0) cout << "\n";
-        cout << arr[i] << " ";
+void printVector(int *v, int n) {
+    for (int i = 0; i < n; i++) cout << v[i] << " ";
+    cout << endl;
+}
+
+void printMatrix(int *m, int N) {
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++)
+            cout << m[i * N + j] << " ";
+        cout << endl;
     }
-    cout << "\n...\n";
 }
 
 int main() {
-    srand(time(0));
+    const int vecSize = 8;
+    const int matrixSize = 2;
 
-    int size = VECTOR_SIZE;
-    int bytes = size * sizeof(float);
+    // ------------------- Vector Addition -------------------
+    int a[vecSize], b[vecSize], c_cpu[vecSize], c_gpu[vecSize];
+    for (int i = 0; i < vecSize; i++) {
+        a[i] = rand() % 10;
+        b[i] = rand() % 10;
+    }
 
-    float *h_A = new float[size];
-    float *h_B = new float[size];
-    float *h_C = new float[size];
+    // CPU Vector Add Time
+    auto startCPU = chrono::high_resolution_clock::now();
+    vectorAddCPU(a, b, c_cpu, vecSize);
+    auto endCPU = chrono::high_resolution_clock::now();
+    auto durationCPU = chrono::duration_cast<chrono::microseconds>(endCPU - startCPU);
+    cout << "CPU Vector Add Time: " << durationCPU.count() << " microseconds\n";
 
-    fillRandom(h_A, size);
-    fillRandom(h_B, size);
+    // GPU Vector Add Time
+    int *d_a, *d_b, *d_c;
+    cudaMalloc(&d_a, vecSize * sizeof(int));
+    cudaMalloc(&d_b, vecSize * sizeof(int));
+    cudaMalloc(&d_c, vecSize * sizeof(int));
 
-    float *d_A, *d_B, *d_C;
-    cudaMalloc(&d_A, bytes);
-    cudaMalloc(&d_B, bytes);
-    cudaMalloc(&d_C, bytes);
+    cudaMemcpy(d_a, a, vecSize * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_b, b, vecSize * sizeof(int), cudaMemcpyHostToDevice);
 
-    cudaMemcpy(d_A, h_A, bytes, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_B, h_B, bytes, cudaMemcpyHostToDevice);
+    cudaEvent_t startGPU, endGPU;
+    float timeGPU;
+    cudaEventCreate(&startGPU);
+    cudaEventCreate(&endGPU);
 
-    int threads = 256;
-    int blocks = (size + threads - 1) / threads;
+    cudaEventRecord(startGPU);
+    vectorAdd<<<1, vecSize>>>(d_a, d_b, d_c, vecSize);
+    cudaEventRecord(endGPU);
+    cudaEventSynchronize(endGPU);
+    cudaEventElapsedTime(&timeGPU, startGPU, endGPU);
 
-    vectorAdd<<<blocks, threads>>>(d_A, d_B, d_C, size);
-    cudaMemcpy(h_C, d_C, bytes, cudaMemcpyDeviceToHost);
+    cudaMemcpy(c_gpu, d_c, vecSize * sizeof(int), cudaMemcpyDeviceToHost);
 
-    cout << "\n=== Vector Addition (first 10 elements) ===\n";
-    printPartial(h_C, size);
+    cout << "GPU Vector Add Time: " << timeGPU * 1000 << " microseconds\n";
+
+    cout << "Vector A: "; printVector(a, vecSize);
+    cout << "Vector B: "; printVector(b, vecSize);
+    cout << "CPU Result: "; printVector(c_cpu, vecSize);
+    cout << "GPU Result: "; printVector(c_gpu, vecSize);
+
+    cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
+
+    // ------------------- Matrix Multiplication -------------------
+    int A[matrixSize * matrixSize], B[matrixSize * matrixSize];
+    int C_cpu[matrixSize * matrixSize], C_gpu[matrixSize * matrixSize];
+    for (int i = 0; i < matrixSize * matrixSize; i++) {
+        A[i] = rand() % 10;
+        B[i] = rand() % 10;
+    }
+
+    startCPU = chrono::high_resolution_clock::now();
+    matrixMulCPU(A, B, C_cpu, matrixSize);
+    endCPU = chrono::high_resolution_clock::now();
+    durationCPU = chrono::duration_cast<chrono::microseconds>(endCPU - startCPU);
+    cout << "\nCPU Matrix Mul Time: " << durationCPU.count() << " microseconds\n";
+
+    int *d_A, *d_B, *d_C;
+    cudaMalloc(&d_A, matrixSize * matrixSize * sizeof(int));
+    cudaMalloc(&d_B, matrixSize * matrixSize * sizeof(int));
+    cudaMalloc(&d_C, matrixSize * matrixSize * sizeof(int));
+
+    cudaMemcpy(d_A, A, matrixSize * matrixSize * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_B, B, matrixSize * matrixSize * sizeof(int), cudaMemcpyHostToDevice);
+
+    cudaEventRecord(startGPU);
+    dim3 threads(16, 16);
+    dim3 blocks((matrixSize + 15) / 16, (matrixSize + 15) / 16);
+    matrixMul<<<blocks, threads>>>(d_A, d_B, d_C, matrixSize);
+    cudaEventRecord(endGPU);
+    cudaEventSynchronize(endGPU);
+    cudaEventElapsedTime(&timeGPU, startGPU, endGPU);
+
+    cudaMemcpy(C_gpu, d_C, matrixSize * matrixSize * sizeof(int), cudaMemcpyDeviceToHost);
+    cout << "GPU Matrix Mul Time: " << timeGPU * 1000 << " microseconds\n";
+
+    cout << "\nMatrix A:\n"; printMatrix(A, matrixSize);
+    cout << "Matrix B:\n"; printMatrix(B, matrixSize);
+    cout << "CPU Result:\n"; printMatrix(C_cpu, matrixSize);
+    cout << "GPU Result:\n"; printMatrix(C_gpu, matrixSize);
 
     cudaFree(d_A); cudaFree(d_B); cudaFree(d_C);
-    delete[] h_A; delete[] h_B; delete[] h_C;
-
-    // =============================
-    // 2. MATRIX MULTIPLICATION
-    // =============================
-    int matrixSize = VECTOR_SIZE;
-    int matrixBytes = matrixSize * matrixSize * sizeof(float);
-
-    float *h_M1 = new float[matrixSize * matrixSize];
-    float *h_M2 = new float[matrixSize * matrixSize];
-    float *h_Mout = new float[matrixSize * matrixSize];
-
-    fillRandom(h_M1, matrixSize * matrixSize);
-    fillRandom(h_M2, matrixSize * matrixSize);
-
-    float *d_M1, *d_M2, *d_Mout;
-    cudaMalloc(&d_M1, matrixBytes);
-    cudaMalloc(&d_M2, matrixBytes);
-    cudaMalloc(&d_Mout, matrixBytes);
-
-    cudaMemcpy(d_M1, h_M1, matrixBytes, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_M2, h_M2, matrixBytes, cudaMemcpyHostToDevice);
-
-    dim3 threadsPerBlock(16, 16);
-    dim3 numBlocks((matrixSize + 15) / 16, (matrixSize + 15) / 16);
-
-    matrixMul<<<numBlocks, threadsPerBlock>>>(d_M1, d_M2, d_Mout, matrixSize);
-    cudaMemcpy(h_Mout, d_Mout, matrixBytes, cudaMemcpyDeviceToHost);
-
-    cout << "\n=== Matrix Multiplication (first 10 elements of result) ===\n";
-    printPartial(h_Mout, matrixSize * matrixSize, matrixSize);
-
-    cudaFree(d_M1); cudaFree(d_M2); cudaFree(d_Mout);
-    delete[] h_M1; delete[] h_M2; delete[] h_Mout;
+    cudaEventDestroy(startGPU); cudaEventDestroy(endGPU);
 
     return 0;
 }
